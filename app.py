@@ -252,9 +252,13 @@ def api_manual_attendance():
     if status == 'Present':
         in_time = datetime.now().strftime('%H:%M:%S')
         out_time = ''
-    else:
+    elif status == 'Absent':
         in_time = 'Absent'
         out_time = 'Absent'
+    else:
+        # Leave statuses (Sick Leave, Paid Leave)
+        in_time = status
+        out_time = status
 
     rec_id = record['id'] if record else None
     # SQLite row object behaves like dict but accessing by 'id' might need dict-like access
@@ -341,6 +345,8 @@ def export_excel():
     present_fill = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid")
     absent_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
     holiday_fill = PatternFill(start_color="EEF2FF", end_color="EEF2FF", fill_type="solid")
+    sick_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid") # light yellow/orange
+    paid_fill = PatternFill(start_color="F3E8FF", end_color="F3E8FF", fill_type="solid") # light purple
     header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
     
     header_font = Font(color="FFFFFF", bold=True)
@@ -356,11 +362,11 @@ def export_excel():
         if col_num <= 3:
            worksheet.column_dimensions[col_let].width = 20
         else:
-           worksheet.column_dimensions[col_let].width = 15 # Slightly wider for times
+           worksheet.column_dimensions[col_let].width = 18 # More room for IN/OUT
     
     # Format Cells based on text
     for r_idx in range(2, len(df_emp) + 2):
-        worksheet.row_dimensions[r_idx].height = 30 # Taller rows for IN/OUT
+        worksheet.row_dimensions[r_idx].height = 42 # Much taller for better spacing
         for c_idx in range(4, len(df_emp.columns) + 1):
             cell = worksheet.cell(row=r_idx, column=c_idx)
             val = str(cell.value) if cell.value else ""
@@ -368,13 +374,19 @@ def export_excel():
             
             if "IN:" in val:
                 cell.fill = present_fill
-                cell.font = Font(color="065F46", bold=True, size=9)
+                cell.font = Font(color="065F46", bold=True, size=10) # Slightly larger font
             elif val == 'Absent':
                 cell.fill = absent_fill
                 cell.font = Font(color="991B1B", size=9)
             elif val == 'Holiday':
                 cell.fill = holiday_fill
                 cell.font = Font(color="3730A3", size=9)
+            elif val == 'Sick Leave':
+                cell.fill = sick_fill
+                cell.font = Font(color="92400E", bold=True, size=9)
+            elif val == 'Paid Leave':
+                cell.fill = paid_fill
+                cell.font = Font(color="6B21A8", bold=True, size=9)
                 
     writer.close()
     
