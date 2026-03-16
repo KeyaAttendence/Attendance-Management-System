@@ -137,20 +137,50 @@ def mark_attendance(employee_id):
         ''', (employee_id, today, now_time, ""))
         status = f"Login recorded at {now_time}"
     else:
-        attendance_id = record['id']
-        if record['logout_time']:
-            last_logout_time = datetime.datetime.strptime(record['logout_time'], '%H:%M:%S')
-            current_time = datetime.datetime.strptime(now_time, '%H:%M:%S')
-            if (current_time - last_logout_time).total_seconds() < 60:
-                conn.close()
-                return "Already marked recently."
+        # SQLite row might be a tuple internally if not configured optimally, 
+        # but row_factory = sqlite3.Row allows dict access.
+        try:
+            attendance_id = record['id']
+            login_val = record['login_time']
+            logout_val = record['logout_time']
+        except (TypeError, IndexError):
+            attendance_id = record[0]
+            login_val = record[1]
+            logout_val = record[2]
+
+        # Prevent overwriting manual "Absent" overrides
+        if login_val == 'Absent' or logout_val == 'Absent':
+            conn.close()
+            return "Manual override active. Contact admin."
+
+        current_time = datetime.datetime.strptime(now_time, '%H:%M:%S')
+
+        # 1) Enforce minimum 3 minutes (180s) between Login and first Logout allowed
+        if login_val:
+            try:
+                lt = datetime.datetime.strptime(login_val, '%H:%M:%S')
+                if (current_time - lt).total_seconds() < 180:
+                    conn.close()
+                    return "Already logged in recently."
+            except ValueError:
+                pass # If parsing fails, proceed
+
+        # 2) Enforce minimum 2 minutes (120s) between consecutive Logout updates
+        if logout_val:
+            try:
+                last_out = datetime.datetime.strptime(logout_val, '%H:%M:%S')
+                if (current_time - last_out).total_seconds() < 120:
+                    conn.close()
+                    return "Already marked recently."
+            except ValueError:
+                pass
 
         cursor.execute(f'''
             UPDATE attendance 
             SET logout_time = {p} 
             WHERE id = {p}
         ''', (now_time, attendance_id))
-        status = f"Logout updated at {now_time}"
+        status = f"Logout recorded at {now_time}"
 
     conn.commit()
     conn.close()

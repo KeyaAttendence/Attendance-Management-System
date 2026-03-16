@@ -226,33 +226,111 @@ def api_manual_attendance():
 
 
 # ─── Export Excel ─────────────────────────────────────────────────────────────
+from openpyxl.styles import PatternFill, Font, Alignment
+from openpyxl.utils import get_column_letter
+
 @app.route('/export_excel')
 def export_excel():
     logs = get_attendance_logs()
-    rows = []
+    employees = get_all_employees()
+    
+    # Setup Date Range for Current Month (up to today)
+    today = datetime.now()
+    start_date = today.replace(day=1)
+    date_range = pd.date_range(start=start_date, end=today)
+    
+    # 1. Prepare Base Employee DataFrame
+    emp_list = [{'ID': e['employee_id'], 'Name': e['name'], 'Department': e['department']} for e in employees]
+    df_emp = pd.DataFrame(emp_list)
+    
+    if df_emp.empty:
+      # Fallback if no employees
+      df_emp = pd.DataFrame(columns=['ID', 'Name', 'Department'])
+    
+    # 2. Process Logs into a Dictionary
+    # Key: (employee_id, date_str), Value: Status
+    attendance_dict = {}
     for l in logs:
-        hours = ''
-        if l['login_time'] and l['logout_time'] and l['login_time'] != 'Absent' and l['logout_time'] != 'Absent':
-            fmt = '%H:%M:%S'
-            try:
-                diff = datetime.strptime(l['logout_time'], fmt) - datetime.strptime(l['login_time'], fmt)
-                hours = str(diff)
-            except ValueError:
-                hours = 'N/A'
-        rows.append({
-            'Employee ID': l['employee_id'],
-            'Name': l['name'],
-            'Department': l['department'],
-            'Date': l['date'],
-            'Login': l['login_time'],
-            'Logout': l['logout_time'],
-            'Total Hours': hours
-        })
-    df = pd.DataFrame(rows)
-    path = os.path.join(os.path.dirname(__file__), 'data', 'attendance.xlsx')
-    df.to_excel(path, index=False, engine='openpyxl')
-    return send_file(path, as_attachment=True, download_name='Attendance_Report.xlsx')
+        try:
+           # only care about current month
+           log_date = datetime.strptime(l['date'], '%Y-%m-%d')
+           if log_date.month == today.month and log_date.year == today.year:
+               eid = l['employee_id']
+               status = 'Absent' if l['login_time'] == 'Absent' else 'Present'
+               attendance_dict[(eid, log_date.strftime('%Y-%m-%d'))] = status
+        except ValueError:
+           pass
+           
+    # 3. Build Date Columns
+    # Loop through all days in current month up to today
+    for single_date in date_range:
+        date_str = single_date.strftime('%Y-%m-%d')
+        col_name = single_date.strftime('%d-%b') # e.g. 05-Mar
+        is_sunday = single_date.weekday() == 6 # 0=Mon, 6=Sun
+        
+        status_list = []
+        for idx, row in df_emp.iterrows():
+            eid = row['ID']
+            if is_sunday:
+                status_list.append('Holiday')
+            else:
+                # Check dictionary
+                status = attendance_dict.get((eid, date_str), 'Absent') # Default to absent if no record and not a weekend
+                status_list.append(status)
+                
+        df_emp[col_name] = status_list
 
+    # 4. Save via OpenPyXL and Apply Colors
+    path = os.path.join(os.path.dirname(__file__), 'data', 'Monthly_Attendance.xlsx')
+    
+    writer = pd.ExcelWriter(path, engine='openpyxl')
+    df_emp.to_excel(writer, sheet_name='Attendance', index=False)
+    
+    workbook = writer.book
+    worksheet = writer.sheets['Attendance']
+    
+    # Define Fills
+    present_fill = PatternFill(start_color="D1FAE5", end_color="D1FAE5", fill_type="solid") # light green
+    absent_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid") # light red
+    holiday_fill = PatternFill(start_color="EEF2FF", end_color="EEF2FF", fill_type="solid") # light blue/indigo
+    header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid") # dark slate
+    
+    header_font = Font(color="FFFFFF", bold=True)
+    
+    # Format Headers
+    for col_num, col_name in enumerate(df_emp.columns, 1):
+        cell = worksheet.cell(row=1, column=col_num)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        
+        # Adjust column width
+        col_let = get_column_letter(col_num)
+        if col_num <= 3:
+           worksheet.column_dimensions[col_let].width = 20
+        else:
+           worksheet.column_dimensions[col_let].width = 12
+    
+    # Format Cells based on text
+    for r_idx in range(2, len(df_emp) + 2):
+        for c_idx in range(4, len(df_emp.columns) + 1): # Start at col 4 (first date)
+            cell = worksheet.cell(row=r_idx, column=c_idx)
+            val = cell.value
+            cell.alignment = Alignment(horizontal='center')
+            
+            if val == 'Present':
+                cell.fill = present_fill
+                cell.font = Font(color="065F46", bold=True)
+            elif val == 'Absent':
+                cell.fill = absent_fill
+                cell.font = Font(color="991B1B")
+            elif val == 'Holiday':
+                cell.fill = holiday_fill
+                cell.font = Font(color="3730A3")
+                
+    writer.close()
+    
+    return send_file(path, as_attachment=True, download_name=f'Attendance_Report_{today.strftime("%b_%Y")}.xlsx')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)

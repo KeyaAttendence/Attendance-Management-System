@@ -413,6 +413,7 @@
                 </div>
             </div>
         </div>
+        <audio id="successSound" src="{{ url_for('static', filename='audio/success.mp3') }}" preload="auto"></audio>
     </main>
 
     <script>
@@ -433,6 +434,7 @@
         const THRESHOLD = 2; // 2 frames ≈ ~0.6 seconds
         const COOLDOWN = 15000;
         let isBusy = false;
+        let isMarking = false;
         let loopTimer = null;
 
         function updateClock() {
@@ -511,6 +513,9 @@
         }
 
         async function handleAttendance(faces) {
+            faces.forEach(f => {
+                if (f.id !== 'Unknown') idToName[f.id] = f.name;
+            });
             const nowIds = new Set(faces.map(f => f.id).filter(id => id !== 'Unknown'));
 
             // Decay counters for IDs no longer in view
@@ -536,7 +541,7 @@
                 // Priority 1: Already Marked recently (lowest priority to display)
                 if (inCooldown) {
                     if (bestPriority < 1) {
-                        bestStatus = { state: 'success', icon: '<i class="fa-solid fa-circle-check"></i>', text: `Hi ${displayName}, attendance recorded.` };
+                        bestStatus = { state: 'state-success', icon: '<i class="fa-solid fa-check-double"></i>', text: `Hi ${displayName}, already recorded.` };
                         bestPriority = 1;
                     }
                     continue;
@@ -545,16 +550,17 @@
                 // Priority 2: In progress (middle)
                 if (seenFor[id] < THRESHOLD) {
                     if (bestPriority < 2) {
-                        bestStatus = { state: 'scanning', icon: '<i class="fa-solid fa-spinner fa-spin"></i>', text: `Verifying ${displayName}...` };
+                        bestStatus = { state: 'state-scanning', icon: '<i class="fa-solid fa-spinner fa-spin"></i>', text: `Verifying ${displayName}...` };
                         bestPriority = 2;
                     }
+                    continue;
                 }
-                // Priority 3: Triggering Mark (highest)
-                else if (seenFor[id] >= THRESHOLD) {
-                    bestStatus = { state: 'scanning', icon: '<i class="fa-solid fa-spinner fa-spin"></i>', text: `Recognizing ${displayName}...` };
-                    bestPriority = 3;
 
-                    // Mark attendance immediately for this person
+                // Priority 3: Triggering Mark (highest)
+                if (seenFor[id] >= THRESHOLD && !isMarking) {
+                    isMarking = true;
+                    updateStatus('state-scanning', '<i class="fa-solid fa-spinner fa-spin"></i>', `Marking ${displayName}...`);
+
                     try {
                         const res = await fetch('/api/mark', {
                             method: 'POST',
@@ -562,16 +568,25 @@
                             body: JSON.stringify({ employee_id: id })
                         });
                         const data = await res.json();
-
-                        // Override status with success immediately
-                        bestStatus = { state: 'success', icon: '<i class="fa-solid fa-circle-check"></i>', text: `Success! ${displayName}<br>${data.message}` };
-                        bestPriority = 4; // Absolute highest
-
-                        markedOn[id] = now;
-                        seenFor[id] = 0;
+                        
+                        if (data.success) {
+                            markedOn[id] = now;
+                            bestStatus = { state: 'state-success', icon: '<i class="fa-solid fa-circle-check"></i>', text: `Welcome, ${displayName}!` };
+                            bestPriority = 4;
+                            
+                            // Play the success sound
+                            successSound.currentTime = 0;
+                            successSound.play().catch(e => console.log('Audio play failed:', e));
+                        } else {
+                            bestStatus = { state: 'state-error', icon: '<i class="fa-solid fa-circle-xmark"></i>', text: `Error for ${displayName}` };
+                            bestPriority = 3;
+                        }
                     } catch (e) {
-                        bestStatus = { state: 'error', icon: '<i class="fa-solid fa-triangle-exclamation"></i>', text: 'Marking failed.' };
-                        bestPriority = 0;
+                        bestStatus = { state: 'state-error', icon: '<i class="fa-solid fa-triangle-exclamation"></i>', text: 'Network Error' };
+                        bestPriority = 3;
+                    } finally {
+                        isMarking = false;
+                        seenFor[id] = 0; // reset
                     }
                 }
             }

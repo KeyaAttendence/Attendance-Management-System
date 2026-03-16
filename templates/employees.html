@@ -4,7 +4,10 @@
 
 <div class="card">
   <div class="card-header flex-between">
-    <h3>All Employees ({{ employees|length }})</h3>
+    <div style="display: flex; align-items: center; gap: 15px;">
+      <h3>All Employees ({{ employees|length }})</h3>
+      <input type="date" id="attendanceDate" class="form-control" style="padding: 5px 10px; width: auto; font-size: 0.85rem;" title="Select date for manual attendance">
+    </div>
     <a href="{{ url_for('add_employee_route') }}" class="btn btn-primary"><i class="fa-solid fa-plus"></i> Add Employee</a>
   </div>
   <div class="card-body p-0">
@@ -45,16 +48,34 @@
 </div>
 
 <script>
+document.addEventListener('DOMContentLoaded', () => {
+  const dateInput = document.getElementById('attendanceDate');
+  if(dateInput) {
+    // Set default value to today's date in local time
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    dateInput.value = `${yyyy}-${mm}-${dd}`;
+  }
+});
+
 async function markManual(id, name, status) {
-  if (!confirm(`Mark ${name} (${id}) as ${status} for today?`)) return;
+  const dateVal = document.getElementById('attendanceDate').value;
+  if (!dateVal) { 
+    alert("Please select a date first."); 
+    return; 
+  }
+  
+  if (!confirm(`Mark ${name} (${id}) as ${status} for ${dateVal}?`)) return;
   const res = await fetch('/api/manual_attendance', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ employee_id: id, status: status })
+    body: JSON.stringify({ employee_id: id, status: status, date: dateVal })
   });
   const data = await res.json();
   if (data.success) {
-    alert(`${name} marked as ${status} successfully!`);
+    alert(`${name} marked as ${status} on ${dateVal} successfully!`);
   } else {
     alert('Failed to mark manually.');
   }
