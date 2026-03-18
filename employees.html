@@ -1,0 +1,105 @@
+{% extends 'base.html' %}
+{% block title %}Employees{% endblock %}
+{% block content %}
+
+<div class="card">
+  <div class="card-header flex-between">
+    <div style="display: flex; align-items: center; gap: 15px;">
+      <h3>All Employees ({{ employees|length }})</h3>
+      <input type="date" id="attendanceDate" class="form-control" style="padding: 5px 10px; width: auto; font-size: 0.85rem;" title="Select date for manual attendance">
+    </div>
+    <div style="display: flex; align-items: center; gap: 15px;">
+      <select id="sortDropdown" class="form-control" style="padding: 5px 10px; width: auto; font-size: 0.85rem;" onchange="sortTable()">
+        <option value="id">Sort by ID</option>
+        <option value="name">Sort by Name</option>
+        <option value="dept">Sort by Department</option>
+      </select>
+      <a href="{{ url_for('add_employee_route') }}" class="btn btn-primary"><i class="fa-solid fa-plus"></i> Add Employee</a>
+    </div>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table" id="employeesTable">
+        <thead>
+          <tr><th>ID</th><th>Name</th><th>Department</th><th>Phone</th><th>Email</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          {% for e in employees %}
+          <tr>
+            <td><span class="chip">{{ e.employee_id }}</span></td>
+            <td><b>{{ e.name }}</b></td>
+            <td>{{ e.department }}</td>
+            <td>{{ e.phone }}</td>
+            <td>{{ e.email }}</td>
+            <td>
+                <a href="{{ url_for('employee_profile', eid=e.employee_id) }}" class="btn btn-secondary btn-sm" title="Employee Settings" style="background-color: #64748b; border-color: #64748b; color: white; width: 100%;">
+                  <i class="fa-solid fa-gear"></i> Settings
+                </a>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="empty">No employees yet. <a href="{{ url_for('add_employee_route') }}">Add one now.</a></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const dateInput = document.getElementById('attendanceDate');
+  if(dateInput) {
+    // Set default value to today's date in local time
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    dateInput.value = `${yyyy}-${mm}-${dd}`;
+  }
+});
+
+function sortTable() {
+  const table = document.getElementById("employeesTable");
+  const tbody = table.querySelector("tbody");
+  const rows = Array.from(tbody.querySelectorAll("tr"));
+  const sortBy = document.getElementById("sortDropdown").value;
+  
+  if (rows.length === 0 || (rows.length === 1 && rows[0].querySelector('.empty'))) return;
+  
+  rows.sort((a, b) => {
+    let valA, valB;
+    if (sortBy === 'id') {
+      valA = a.cells[0].innerText.trim();
+      valB = b.cells[0].innerText.trim();
+      const matchA = valA.match(/\d+/);
+      const matchB = valB.match(/\d+/);
+      if (matchA && matchB) {
+        const numA = parseInt(matchA[0], 10);
+        const numB = parseInt(matchB[0], 10);
+        const prefixA = valA.replace(matchA[0], '');
+        const prefixB = valB.replace(matchB[0], '');
+        if (prefixA === prefixB) {
+            return numA - numB;
+        }
+      }
+      return valA.localeCompare(valB);
+    } else if (sortBy === 'name') {
+      valA = a.cells[1].innerText.trim();
+      valB = b.cells[1].innerText.trim();
+      return valA.localeCompare(valB);
+    } else if (sortBy === 'dept') {
+      valA = a.cells[2].innerText.trim();
+      valB = b.cells[2].innerText.trim();
+      return valA.localeCompare(valB);
+    }
+    return 0;
+  });
+  
+  // Re-append sorted rows
+  rows.forEach(row => tbody.appendChild(row));
+}
+</script>
+{% endblock %}

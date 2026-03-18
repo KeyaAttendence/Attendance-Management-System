@@ -5,7 +5,8 @@ import cv2
 import numpy as np
 import os
 import pandas as pd
-from datetime import datetime
+import csv
+from datetime import datetime, timedelta
 import base64
 
 from database import init_db, add_employee, update_employee, get_all_employees, delete_employee, mark_attendance, get_attendance_logs, update_attendance_time, get_db_connection, get_cursor, get_placeholder
@@ -110,6 +111,22 @@ def view_employees():
 @login_required
 def add_employee_route():
     return render_template('add_employee.html')
+
+@app.route('/employee/<eid>')
+@login_required
+def employee_profile(eid):
+    employees = get_all_employees()
+    # Find the specific employee
+    emp = next((e for e in employees if e['employee_id'] == eid), None)
+    
+    if not emp:
+        return "Employee not found", 404
+        
+    # Get all logs and filter for this employee
+    all_logs = get_attendance_logs()
+    emp_logs = [log for log in all_logs if log['employee_id'] == eid]
+    
+    return render_template('employee_profile.html', employee=emp, logs=emp_logs)
 
 @app.route('/attendance')
 @login_required
@@ -329,40 +346,55 @@ def api_manual_attendance():
     data = request.get_json(force=True)
     eid = data.get('employee_id')
     status = data.get('status')
-    date_val = data.get('date', datetime.now().strftime('%Y-%m-%d'))
+    start_date_str = data.get('date', datetime.now().strftime('%Y-%m-%d'))
+    end_date_str = data.get('to_date', start_date_str) # Defaults to start_date if not provided
     
     if not eid or not status:
         return jsonify(success=False, message='Missing parameters')
         
+    try:
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+    except ValueError:
+        return jsonify(success=False, message='Invalid date format. Use YYYY-MM-DD.')
+
+    if end_date < start_date:
+        return jsonify(success=False, message='To Date cannot be before From Date.')
+
     conn = get_db_connection()
     cursor = get_cursor(conn)
     p = get_placeholder()
     
-    # Check if record exists
-    cursor.execute(f"SELECT id FROM attendance WHERE employee_id = {p} AND date = {p}", (eid, date_val))
-    record = cursor.fetchone()
+    # Generate list of dates
+    delta = end_date - start_date
+    dates_to_apply = [(start_date + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(delta.days + 1)]
     
-    if status == 'Present':
-        in_time = datetime.now().strftime('%H:%M:%S')
-        out_time = ''
-    elif status == 'Absent':
-        in_time = 'Absent'
-        out_time = 'Absent'
-    else:
-        # Leave statuses (Sick Leave, Paid Leave)
-        in_time = status
-        out_time = status
-
-    rec_id = record['id'] if record else None
-    # SQLite row object behaves like dict but accessing by 'id' might need dict-like access
-    if record and type(record) is not dict:
-        rec_id = record[0] if isinstance(record, tuple) else record['id']
-
-    if record:
-        cursor.execute(f"UPDATE attendance SET login_time = {p}, logout_time = {p} WHERE id = {p}", (in_time, out_time, rec_id))
-    else:
-        cursor.execute(f"INSERT INTO attendance (employee_id, date, login_time, logout_time) VALUES ({p}, {p}, {p}, {p})", (eid, date_val, in_time, out_time))
+    for date_val in dates_to_apply:
+        # Check if record exists for this specific day
+        cursor.execute(f"SELECT id FROM attendance WHERE employee_id = {p} AND date = {p}", (eid, date_val))
+        record = cursor.fetchone()
         
+        if status == 'Present':
+            in_time = datetime.now().strftime('%H:%M:%S')
+            out_time = ''
+        elif status == 'Absent':
+            in_time = 'Absent'
+            out_time = 'Absent'
+        else:
+            # Leave statuses (Sick Leave, Paid Leave, Casual Leave)
+            in_time = status
+            out_time = status
+
+        rec_id = record['id'] if record else None
+        # SQLite row object behaves like dict but accessing by 'id' might need dict-like access
+        if record and type(record) is not dict:
+            rec_id = record[0] if isinstance(record, tuple) else record['id']
+
+        if record:
+            cursor.execute(f"UPDATE attendance SET login_time = {p}, logout_time = {p} WHERE id = {p}", (in_time, out_time, rec_id))
+        else:
+            cursor.execute(f"INSERT INTO attendance (employee_id, date, login_time, logout_time) VALUES ({p}, {p}, {p}, {p})", (eid, date_val, in_time, out_time))
+            
     conn.commit()
     conn.close()
     return jsonify(success=True)
