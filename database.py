@@ -187,7 +187,6 @@ def mark_attendance(employee_id):
         conn.close()
         return "IN", f"Check-In: {now_time}"
     else:
-        # Extract values (handle both dict and tuple)
         try:
             rid = record['id']
             login_val = record['login_time']
@@ -195,17 +194,29 @@ def mark_attendance(employee_id):
         except (TypeError, IndexError):
             rid, login_val, logout_val = record[0], record[1], record[2]
 
-        # Safety: If manual override is active, don't update
         if login_val == 'Absent' or logout_val == 'Absent' or login_val == 'Sick Leave' or login_val == 'Paid Leave':
             conn.close()
             return "OVERRIDE", "Manual Leave Active"
 
-        # If already logged out for today
         if logout_val and logout_val != "":
             conn.close()
             return "ALREADY_OUT", f"Already Out: {logout_val}"
 
-        # Otherwise -> Check-Out
+        # ── Turbo Instant Mode ──
+        # Reduced safety window to 5 seconds to solve 'Web to App' slow render complaints.
+        try:
+            from datetime import datetime as dt
+            fmt = '%H:%M:%S'
+            t1 = dt.strptime(login_val, fmt)
+            t2 = dt.strptime(now_time, fmt)
+            diff_sec = (t2 - t1).total_seconds()
+            
+            if 0 <= diff_sec < 5:
+                conn.close()
+                return "ALREADY_IN", f"Already Checked-In! (Wait 5s to Out)"
+        except Exception as e:
+            print(f"Time comparison error: {e}")
+
         cursor.execute(f"UPDATE attendance SET logout_time = {p} WHERE id = {p}", (now_time, rid))
         conn.commit()
         conn.close()
@@ -250,6 +261,20 @@ def update_attendance_time(record_id, login_time, logout_time):
         return True
     except Exception as e:
         print(f"Error updating attendance time: {e}")
+        return False
+    finally:
+        conn.close()
+
+def delete_attendance_record(record_id):
+    conn = get_db_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    try:
+        cursor.execute(f"DELETE FROM attendance WHERE id = {p}", (record_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting attendance record: {e}")
         return False
     finally:
         conn.close()
