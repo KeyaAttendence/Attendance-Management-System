@@ -5,8 +5,7 @@ import cv2
 import numpy as np
 import os
 import pandas as pd
-import csv
-from datetime import datetime, timedelta
+from datetime import datetime
 import base64
 
 from database import init_db, add_employee, update_employee, get_all_employees, delete_employee, mark_attendance, get_attendance_logs, update_attendance_time, get_db_connection, get_cursor, get_placeholder
@@ -93,13 +92,22 @@ def index():
         return redirect(url_for('user_panel'))
         
     employees = get_all_employees()
-    all_logs   = get_attendance_logs()
-    today      = datetime.now().strftime('%Y-%m-%d')
-    today_logs = [l for l in all_logs if l['date'] == today]
+    today = datetime.now().strftime('%Y-%m-%d')
+    all_logs = get_attendance_logs() # All logs for "Recent Attendance" table
+    
+    # Get only today's logs for status overview
+    today_records = get_attendance_logs(today)
+    present_ids = {str(l['employee_id']) for l in today_records}
+    
+    present_list = today_records
+    absent_list = [emp for emp in employees if str(emp['employee_id']) not in present_ids]
     
     return render_template('index.html', 
                            total_employees=len(employees),
-                           present_today=len(today_logs),
+                           present_today=len(present_list),
+                           absent_today=len(absent_list),
+                           present_list=present_list,
+                           absent_list=absent_list,
                            recent_logs=all_logs[:8])
 
 @app.route('/employees')
@@ -111,22 +119,6 @@ def view_employees():
 @login_required
 def add_employee_route():
     return render_template('add_employee.html')
-
-@app.route('/employee/<eid>')
-@login_required
-def employee_profile(eid):
-    employees = get_all_employees()
-    # Find the specific employee
-    emp = next((e for e in employees if e['employee_id'] == eid), None)
-    
-    if not emp:
-        return "Employee not found", 404
-        
-    # Get all logs and filter for this employee
-    all_logs = get_attendance_logs()
-    emp_logs = [log for log in all_logs if log['employee_id'] == eid]
-    
-    return render_template('employee_profile.html', employee=emp, logs=emp_logs)
 
 @app.route('/attendance')
 @login_required
@@ -249,21 +241,44 @@ def api_recognise():
     if bgr is None:
         return jsonify(success=False, faces=[])
 
-    # Shrink for speed
+    # ───── Speed & Accuracy Optimization (Hybrid Mode) ─────
+    # 1. Faster Detection: 25% scale (Ideal for real-time kiosk)
     small = cv2.resize(bgr, (0, 0), fx=0.25, fy=0.25)
-    rgb   = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+    small_rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+    
+    # 2. Extract locations from thumbnail
+    # Upsample once allows detecting smaller faces even at 25% scale
+    locs = face_recognition.face_locations(small_rgb, number_of_times_to_upsample=1, model='hog')
+    
+    if not locs:
+        return jsonify(success=True, faces=[])
 
-    locs  = face_recognition.face_locations(rgb, model='hog')
-    encs  = face_recognition.face_encodings(rgb, locs)
+    # 3. Precise Encoding: Full Scale
+    # We use full resolution image for encoding to maintain accuracy
+    full_rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    # Upscale locations to match original image (4x because of 0.25 scale)
+    full_locs = [(t*4, r*4, b*4, l*4) for (t, r, b, l) in locs]
+    # num_jitters=0 for sub-100ms processing
+    encs = face_recognition.face_encodings(full_rgb, full_locs, num_jitters=0)
 
     results = []
-    for (top, right, bottom, left), enc in zip(locs, encs):
-        mid = match_face(known_encodings, known_ids, enc)
+    for (t, r, b, l), enc in zip(full_locs, encs):
+        # We need to find the best match and the distance
+        if not known_encodings:
+            mid, dist = None, 1.0
+        else:
+            distances = face_recognition.face_distance(known_encodings, enc)
+            best_idx = np.argmin(distances)
+            dist = float(distances[best_idx])
+            # Use strict tolerance (0.50) for high accuracy
+            mid = known_ids[best_idx] if dist < 0.50 else None
+
         name = id_to_name.get(mid, 'Unknown') if mid else 'Unknown'
         results.append({
             'id':  mid if mid else 'Unknown',
             'name': name,
-            'box': {'top': top*4, 'right': right*4, 'bottom': bottom*4, 'left': left*4}
+            'dist': round(dist, 4), # Helpful for frontend fine-tuning
+            'box': {'top': t, 'right': r, 'bottom': b, 'left': l}
         })
 
     return jsonify(success=True, faces=results)
@@ -346,55 +361,40 @@ def api_manual_attendance():
     data = request.get_json(force=True)
     eid = data.get('employee_id')
     status = data.get('status')
-    start_date_str = data.get('date', datetime.now().strftime('%Y-%m-%d'))
-    end_date_str = data.get('to_date', start_date_str) # Defaults to start_date if not provided
+    date_val = data.get('date', datetime.now().strftime('%Y-%m-%d'))
     
     if not eid or not status:
         return jsonify(success=False, message='Missing parameters')
         
-    try:
-        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
-        end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-    except ValueError:
-        return jsonify(success=False, message='Invalid date format. Use YYYY-MM-DD.')
-
-    if end_date < start_date:
-        return jsonify(success=False, message='To Date cannot be before From Date.')
-
     conn = get_db_connection()
     cursor = get_cursor(conn)
     p = get_placeholder()
     
-    # Generate list of dates
-    delta = end_date - start_date
-    dates_to_apply = [(start_date + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(delta.days + 1)]
+    # Check if record exists
+    cursor.execute(f"SELECT id FROM attendance WHERE employee_id = {p} AND date = {p}", (eid, date_val))
+    record = cursor.fetchone()
     
-    for date_val in dates_to_apply:
-        # Check if record exists for this specific day
-        cursor.execute(f"SELECT id FROM attendance WHERE employee_id = {p} AND date = {p}", (eid, date_val))
-        record = cursor.fetchone()
+    if status == 'Present':
+        in_time = datetime.now().strftime('%H:%M:%S')
+        out_time = ''
+    elif status == 'Absent':
+        in_time = 'Absent'
+        out_time = 'Absent'
+    else:
+        # Leave statuses (Sick Leave, Paid Leave)
+        in_time = status
+        out_time = status
+
+    rec_id = record['id'] if record else None
+    # SQLite row object behaves like dict but accessing by 'id' might need dict-like access
+    if record and type(record) is not dict:
+        rec_id = record[0] if isinstance(record, tuple) else record['id']
+
+    if record:
+        cursor.execute(f"UPDATE attendance SET login_time = {p}, logout_time = {p} WHERE id = {p}", (in_time, out_time, rec_id))
+    else:
+        cursor.execute(f"INSERT INTO attendance (employee_id, date, login_time, logout_time) VALUES ({p}, {p}, {p}, {p})", (eid, date_val, in_time, out_time))
         
-        if status == 'Present':
-            in_time = datetime.now().strftime('%H:%M:%S')
-            out_time = ''
-        elif status == 'Absent':
-            in_time = 'Absent'
-            out_time = 'Absent'
-        else:
-            # Leave statuses (Sick Leave, Paid Leave, Casual Leave)
-            in_time = status
-            out_time = status
-
-        rec_id = record['id'] if record else None
-        # SQLite row object behaves like dict but accessing by 'id' might need dict-like access
-        if record and type(record) is not dict:
-            rec_id = record[0] if isinstance(record, tuple) else record['id']
-
-        if record:
-            cursor.execute(f"UPDATE attendance SET login_time = {p}, logout_time = {p} WHERE id = {p}", (in_time, out_time, rec_id))
-        else:
-            cursor.execute(f"INSERT INTO attendance (employee_id, date, login_time, logout_time) VALUES ({p}, {p}, {p}, {p})", (eid, date_val, in_time, out_time))
-            
     conn.commit()
     conn.close()
     return jsonify(success=True)
@@ -564,6 +564,14 @@ def export_excel():
     writer.close()
     
     return send_file(path, as_attachment=True, download_name=f'Attendance_Report_{today.strftime("%b_%Y")}.xlsx')
+
+@app.route('/api/delete_attendance_record/<int:record_id>', methods=['POST'])
+@login_required
+def api_delete_attendance_record(record_id):
+    from database import delete_attendance_record
+    if delete_attendance_record(record_id):
+        return jsonify(success=True)
+    return jsonify(success=False, message="Failed to delete record.")
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)
